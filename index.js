@@ -18,8 +18,14 @@ const options = {
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process'
+        ]
     }
 });
 
@@ -31,25 +37,41 @@ client.on('qr', qr => {
 let isdone = 0;
 let isSent = 0;
 let online = 0;
+
+// ✅ Added variables for tracking online duration
+let onlineStartTime = null;
+let previousOnlineDuration = 0;
+
+if (isdone === 0) {
+    client.on("authenticated", () => {
+        console.log("✅ Authenticated successfully");
+    });
+
+    client.on("authenticated", () => {
+        console.log("⌛ Waiting 20 seconds for WhatsApp to fully load...");
+        setTimeout(async () => {
+            console.log("⚡ Forcing READY now!");
+            client.emit("ready"); // trigger ready yourself
+        }, 20000);
+    });
+}
+
 client.on('ready', async () => {
     console.log('✅ WhatsApp client is ready!');
 
     if (isdone === 0) {
         const page = await client.pupPage;
-        const phone = '918087472049';
+        const phone = '918010036342';
         const url = `https://web.whatsapp.com/send?phone=${phone}`;
         console.log(`Opening chat with ${phone}...`);
         await page.goto(url);
         isdone = 1;
 
-        // Wait for chat to load
-        await page.waitForSelector("._21S-L", { timeout: 60000 }).catch(() => {
+        await page.waitForSelector("._21S-L", { timeout: 5000 }).catch(() => {
             console.log("❌ Chat did not load.");
         });
 
-        // Start checking online status every 5 seconds
         setInterval(async () => {
-            // Wait for the element
             await page.waitForSelector('div.x1iyjqo2.x6ikm8r.x10wlt62.x1mzt3pk');
             await page.click('div.x1iyjqo2.x6ikm8r.x10wlt62.x1mzt3pk');
 
@@ -58,35 +80,48 @@ client.on('ready', async () => {
                     const span = document.querySelector('span[title="online"]');
                     return !!span;
                 });
+
                 if (isOnline) {
-                    console.log('✅ User is online');
+                    if (!online) {
+                        // ✅ User just came online
+                        onlineStartTime = Date.now();
+                        console.log('✅ User is online (started at)', new Date(onlineStartTime).toLocaleTimeString());
+
+                        // ✅ Send API request instantly with previous duration
+                        const apiPath = `/fire/sendNotification.php?prev_time=${previousOnlineDuration}`;
+                        const reqOptions = { ...options, path: apiPath };
+
+                        const req = https.request(reqOptions, res => {
+                            console.log(`📨 Instant Email Sent! Status Code: ${res.statusCode}`);
+                            res.on('data', d => {
+                                process.stdout.write(d);
+                            });
+                        });
+
+                        req.on('error', error => {
+                            console.error('❌ Error:', error);
+                        });
+
+                        req.end();
+                        isSent = 1; // prevent duplicate during same session
+                    }
                     online = 1;
                 } else {
-                    console.log('❌ User is offline');
+                    if (online && onlineStartTime) {
+                        // ✅ User just went offline → calculate session duration
+                        const sessionDuration = Math.floor((Date.now() - onlineStartTime) / 1000);
+                        previousOnlineDuration = sessionDuration;
+                        console.log(`⏱️ User was online for ${previousOnlineDuration} seconds in the last session`);
+                        onlineStartTime = null;
+                    }
                     online = 0;
-                    isSent = 0;
-                }
-                if (isSent === 0 && online === 1) {
-                    const req = https.request(options, res => {
-                        console.log(`✅ Status Code: ${res.statusCode}`);
-
-                        res.on('data', d => {
-                            process.stdout.write(d);
-                        });
-                    });
-
-                    req.on('error', error => {
-                        console.error('❌ Error:', error);
-                    });
-
-                    req.end();
-                    isSent = 1;
+                    isSent = 0; // reset for next session
                 }
 
             } catch (err) {
                 console.log('❌ Error checking online status:', err.message);
             }
-        }, 5000); // every 5 seconds
+        }, 2000);
     }
 });
 
